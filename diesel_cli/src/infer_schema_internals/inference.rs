@@ -64,6 +64,7 @@ static RESERVED_NAMES: &[&str] = &[
     "bool",
     "columns",
     "is_nullable",
+    "q",
 ];
 
 fn is_reserved_name(name: &str) -> bool {
@@ -279,8 +280,12 @@ pub fn load_table_data(
 
     let column_data = get_column_information(connection, &name, &config.column_sorting)?
         .into_iter()
-        .map(|c| {
-            let ty = determine_column_type(&c, connection, &name, &primary_key, config)?;
+        .map(|mut c| {
+        let column_name = &c.column_name;
+        let primary_key:&Vec<_> =&primary_key;
+
+        c.nullable = if !primary_key.contains(&column_name) { !column_name.ends_with("_id")} else {false };
+            let ty = determine_column_type(&c, connection)?;
 
             let ColumnInformation {
                 column_name,
