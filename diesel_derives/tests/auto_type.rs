@@ -2,6 +2,9 @@
 use diesel::dsl::*;
 use diesel::helper_types::*;
 use diesel::prelude::*;
+use diesel::sql_types;
+#[cfg(feature = "postgres")]
+use std::ops::Bound;
 
 table! {
     users {
@@ -154,7 +157,11 @@ fn test_delete() -> _ {
 
 #[auto_type]
 fn test_delete_2() -> _ {
-    delete(users::table.find(1_i32))
+    delete(users::table.find({
+        // Test that type ascriptions via nested blocks work
+        let id: i32 = 1;
+        id
+    }))
 }
 
 #[auto_type]
@@ -172,10 +179,11 @@ fn test_insert1() -> _ {
     insert_into(users::table).values(users::id.eq(42_i32))
 }
 
-/*
-#[auto_type]
+/*#[auto_type]
 fn test_insert2() -> _ {
-    users::table.insert_into(users::table).into_columns(users::all_columns)
+    users::table
+        .insert_into(users::table)
+        .into_columns(users::all_columns)
 }*/
 
 #[auto_type]
@@ -188,11 +196,10 @@ fn test_insert_or_replace() -> _ {
     replace_into(users::table).values(users::id.eq(42_i32))
 }
 
-/*
 #[auto_type]
 fn test_bare_select() -> _ {
-    select(1_i32.into_sql::<Integer>())
-}*/
+    select(1_i32.into_sql::<sql_types::Integer>())
+}
 
 #[cfg(feature = "postgres")]
 #[auto_type]
@@ -269,17 +276,20 @@ fn test_pg_jsonb_expression_methods() -> _ {
         .and(pg_extras::jsonb.is_contained_by(pg_extras::jsonb))
 }
 
-// `.contains()` cannot be supported here as
-// the type level constraints are slightly different
-// for `Range<>` than for the other types that provide a `contains()`
-// function. We could likely support it by
-// renaming the function to `.range_contains()` (or something similar)
-/*
 #[cfg(feature = "postgres")]
 #[auto_type]
 fn test_pg_range_expression_methods() -> _ {
-    pg_extras::range.contains(42_i32)
-}*/
+    let my_range: (Bound<i32>, Bound<i32>) = (Bound::Included(2), Bound::Included(7));
+
+    pg_extras::range.contains_range(my_range)
+
+    // `.contains()` cannot be supported here as
+    // the type level constraints are slightly different
+    // for `Range<>` than for the other types that provide a `contains()`
+    // function. We could likely support it by
+    // renaming the function to `.range_contains()` (or something similar)
+    // .contains(42_i32)
+}
 
 #[cfg(feature = "postgres")]
 #[auto_type]
@@ -348,6 +358,24 @@ fn test_normal_functions() -> _ {
             .otherwise(users::id),
         case_when(users::id.eq(1_i32), users::id).otherwise(users::id),
     ))
+}
+
+#[auto_type]
+fn with_lifetime<'a>(name: &'a str) -> _ {
+    users::table.filter(users::name.eq(name))
+}
+
+#[auto_type]
+fn with_type_generics<'a, T>(name: &'a T) -> _
+where
+    &'a T: diesel::expression::AsExpression<diesel::sql_types::Text>,
+{
+    users::name.eq(name)
+}
+
+#[auto_type]
+fn with_const_generics<const N: i32>() -> _ {
+    users::id.eq(N)
 }
 
 // #[auto_type]

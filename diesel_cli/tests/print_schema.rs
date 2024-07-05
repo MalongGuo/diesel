@@ -11,6 +11,15 @@ fn run_infer_schema_without_docs() {
 }
 
 #[test]
+#[cfg(feature = "postgres")]
+fn run_except_custom_type_definitions() {
+    test_print_schema(
+        "print_schema_except_custom_type_definitions",
+        vec!["--except-custom-type-definitions", "MyType2"],
+    );
+}
+
+#[test]
 fn run_infer_schema() {
     test_print_schema("print_schema_simple", vec!["--with-docs"]);
 }
@@ -152,6 +161,22 @@ fn print_schema_custom_types() {
     test_print_schema(
         "print_schema_custom_types",
         vec!["--import-types", "foo::*", "--import-types", "bar::*"],
+    );
+}
+
+#[test]
+#[cfg(feature = "postgres")]
+fn print_schema_custom_types_custom_schema() {
+    test_print_schema(
+        "print_schema_custom_types_custom_schema",
+        vec![
+            "--schema",
+            "v2",
+            "--custom-type-derives",
+            "diesel::query_builder::QueryId",
+            "--custom-type-derives",
+            "Clone",
+        ],
     );
 }
 
@@ -353,6 +378,12 @@ fn print_schema_quoted_schema_and_table_name() {
         "print_schema_quoted_schema_and_table_name",
         vec!["--schema", "CustomSchema"],
     )
+}
+
+#[cfg(feature = "postgres")]
+#[test]
+fn print_schema_citext() {
+    test_print_schema("print_schema_citext", vec![])
 }
 
 #[test]

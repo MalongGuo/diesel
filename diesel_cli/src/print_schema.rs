@@ -48,7 +48,9 @@ pub fn run_print_schema<W: IoWrite>(
 ) -> Result<(), crate::errors::Error> {
     let schema = output_schema(connection, config)?;
 
-    output.write_all(schema.as_bytes())?;
+    output
+        .write_all(schema.as_bytes())
+        .map_err(|e| crate::errors::Error::IoError(e, None))?;
     Ok(())
 }
 
@@ -93,6 +95,7 @@ fn common_diesel_types(types: &mut HashSet<&str>) {
 fn pg_diesel_types() -> HashSet<&'static str> {
     let mut types = HashSet::new();
     types.insert("Cidr");
+    types.insert("Citext");
     types.insert("Inet");
     types.insert("Jsonb");
     types.insert("MacAddr");
@@ -184,6 +187,13 @@ pub fn output_schema(
                         .map(|c| {
                             Some(&c.ty)
                                 .filter(|ty| !diesel_provided_types.contains(ty.rust_name.as_str()))
+                                // Skip types that are that match the regexes in the configuration
+                                .filter(|ty| {
+                                    !config
+                                        .except_custom_type_definitions
+                                        .iter()
+                                        .any(|rx| rx.is_match(ty.rust_name.as_str()))
+                                })
                                 .map(|ty| match backend {
                                     #[cfg(feature = "postgres")]
                                     Backend::Pg => ty.clone(),
@@ -264,7 +274,7 @@ pub fn output_schema(
                     patch_file.display(),
                     e
                 );
-                return Err(e.into());
+                return Err(crate::errors::Error::IoError(e, Some(patch_file.clone())));
             }
         };
         let patch = diffy::Patch::from_str(&patch)?;

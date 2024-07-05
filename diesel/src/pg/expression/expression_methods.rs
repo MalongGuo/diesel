@@ -755,6 +755,57 @@ pub trait PgRangeExpressionMethods: Expression + Sized {
     {
         Grouped(Contains::new(self, other.as_expression()))
     }
+
+    /// Creates a PostgreSQL `@>` expression.
+    ///
+    /// This operator returns whether a range contains an specific element
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # include!("../../doctest_setup.rs");
+    /// #
+    /// # table! {
+    /// #     posts {
+    /// #         id -> Integer,
+    /// #         versions -> Range<Integer>,
+    /// #     }
+    /// # }
+    /// #
+    /// # fn main() {
+    /// #     run_test().unwrap();
+    /// # }
+    /// #
+    /// # fn run_test() -> QueryResult<()> {
+    /// #     use self::posts::dsl::*;
+    /// #     use std::collections::Bound;
+    /// #     let conn = &mut establish_connection();
+    /// #     diesel::sql_query("DROP TABLE IF EXISTS posts").execute(conn).unwrap();
+    /// #     diesel::sql_query("CREATE TABLE posts (id SERIAL PRIMARY KEY, versions INT4RANGE NOT NULL)").execute(conn).unwrap();
+    /// #
+    /// diesel::insert_into(posts)
+    ///     .values(versions.eq((Bound::Included(5), Bound::Unbounded)))
+    ///     .execute(conn)?;
+    ///
+    /// let cool_posts = posts.select(id)
+    ///     .filter(versions.contains_range((Bound::Included(10), Bound::Included(50))))
+    ///     .load::<i32>(conn)?;
+    /// assert_eq!(vec![1], cool_posts);
+    ///
+    /// let amazing_posts = posts.select(id)
+    ///     .filter(versions.contains_range((Bound::Included(2), Bound::Included(7))))
+    ///     .load::<i32>(conn)?;
+    /// assert!(amazing_posts.is_empty());
+    /// #     Ok(())
+    /// # }
+    /// ```
+    fn contains_range<T>(self, other: T) -> dsl::ContainsRange<Self, T>
+    where
+        Self::SqlType: SqlType,
+        T: AsExpression<Self::SqlType>,
+    {
+        Grouped(Contains::new(self, other.as_expression()))
+    }
 }
 
 impl<T> PgRangeExpressionMethods for T
@@ -2406,12 +2457,20 @@ pub(in crate::pg) mod private {
     /// Marker trait used to implement `ArrayExpressionMethods` on the appropriate
     /// types. Once coherence takes associated types into account, we can remove
     /// this trait.
+    #[diagnostic::on_unimplemented(
+        message = "`{Self}` is neither `diesel::sql_types::Array<_>` nor `diesel::sql_types::Nullable<Array<_>>`",
+        note = "try to provide an expression that produces one of the expected sql types"
+    )]
     pub trait ArrayOrNullableArray {}
 
     impl<T> ArrayOrNullableArray for Array<T> {}
     impl<T> ArrayOrNullableArray for Nullable<Array<T>> {}
 
     /// Marker trait used to implement `PgNetExpressionMethods` on the appropriate types.
+    #[diagnostic::on_unimplemented(
+        message = "`{Self}` is neither `diesel::sql_types::Inet`, `diesel::sql_types::Cidr`, `diesel::sql_types::Nullable<Inet>` nor `diesel::sql_types::Nullable<Cidr>",
+        note = "try to provide an expression that produces one of the expected sql types"
+    )]
     pub trait InetOrCidr {}
 
     impl InetOrCidr for Inet {}
@@ -2422,6 +2481,10 @@ pub(in crate::pg) mod private {
     /// Marker trait used to implement `PgTextExpressionMethods` on the appropriate
     /// types. Once coherence takes associated types into account, we can remove
     /// this trait.
+    #[diagnostic::on_unimplemented(
+        message = "`{Self}` is neither `diesel::sql_types::Text` nor `diesel::sql_types::Nullable<Text>`",
+        note = "try to provide an expression that produces one of the expected sql types"
+    )]
     pub trait TextOrNullableText {}
 
     impl TextOrNullableText for Text {}
@@ -2443,12 +2506,20 @@ pub(in crate::pg) mod private {
     /// Marker trait used to implement `PgRangeExpressionMethods` on the appropriate
     /// types. Once coherence takes associated types into account, we can remove
     /// this trait.
+    #[diagnostic::on_unimplemented(
+        message = "`{Self}` is neither `diesel::sql_types::Range<_>` nor `diesel::sql_types::Nullable<Range<_>>`",
+        note = "try to provide an expression that produces one of the expected sql types"
+    )]
     pub trait RangeOrNullableRange {}
 
     impl<ST> RangeOrNullableRange for Range<ST> {}
     impl<ST> RangeOrNullableRange for Nullable<Range<ST>> {}
 
     /// Marker trait used to implement `PgJsonbExpressionMethods` on the appropriate types.
+    #[diagnostic::on_unimplemented(
+        message = "`{Self}` is neither `diesel::sql_types::Jsonb` nor `diesel::sql_types::Nullable<Jsonb>`",
+        note = "try to provide an expression that produces one of the expected sql types"
+    )]
     pub trait JsonbOrNullableJsonb {}
 
     impl JsonbOrNullableJsonb for Jsonb {}
@@ -2523,6 +2594,10 @@ pub(in crate::pg) mod private {
         }
     }
 
+    #[diagnostic::on_unimplemented(
+        message = "`{Self}` is neither `diesel::sql_types::Text`, `diesel::sql_types::Integer` nor `diesel::sql_types::Array<Text>`",
+        note = "try to provide an expression that produces one of the expected sql types"
+    )]
     pub trait TextArrayOrTextOrInteger {}
 
     impl TextArrayOrTextOrInteger for Array<Text> {}
@@ -2530,6 +2605,10 @@ pub(in crate::pg) mod private {
     impl TextArrayOrTextOrInteger for Integer {}
 
     /// Marker trait used to implement `PgAnyJsonExpressionMethods` on the appropriate types.
+    #[diagnostic::on_unimplemented(
+        message = "`{Self}` is neither `diesel::sql_types::Json`, `diesel::sql_types::Jsonb`, `diesel::sql_types::Nullable<Json>` nor `diesel::sql_types::Nullable<Jsonb>`",
+        note = "try to provide an expression that produces one of the expected sql types"
+    )]
     pub trait JsonOrNullableJsonOrJsonbOrNullableJsonb {}
     impl JsonOrNullableJsonOrJsonbOrNullableJsonb for Json {}
     impl JsonOrNullableJsonOrJsonbOrNullableJsonb for Nullable<Json> {}
@@ -2578,10 +2657,18 @@ pub(in crate::pg) mod private {
         }
     }
 
+    #[diagnostic::on_unimplemented(
+        message = "`{Self}` is neither `diesel::sql_types::Text` nor `diesel::sql_types::Integer`",
+        note = "try to provide an expression that produces one of the expected sql types"
+    )]
     pub trait TextOrInteger {}
     impl TextOrInteger for Text {}
     impl TextOrInteger for Integer {}
 
+    #[diagnostic::on_unimplemented(
+        message = "`{Self}` is neither `diesel::sql_types::Binary` nor `diesel::sql_types::Nullable<Binary>`",
+        note = "try to provide an expression that produces one of the expected sql types"
+    )]
     pub trait BinaryOrNullableBinary {}
 
     impl BinaryOrNullableBinary for Binary {}

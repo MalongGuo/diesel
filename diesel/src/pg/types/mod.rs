@@ -428,20 +428,35 @@ pub mod sql_types {
     ///
     /// ### [`ToSql`] impls
     ///
-    #[cfg_attr(feature = "ipnetwork", doc = " - [`ipnetwork::IpNetwork`][IpNetwork]")]
-    #[cfg_attr(feature = "ipnet", doc = " - [`ipnet::IpNet`][IpNet]")]
-    #[cfg_attr(not(any(feature = "ipnetwork", feature = "ipnet")), doc = "N/A")]
+    #[cfg_attr(
+        feature = "network-address",
+        doc = " - [`ipnetwork::IpNetwork`][IpNetwork]"
+    )]
+    #[cfg_attr(feature = "ipnet-address", doc = " - [`ipnet::IpNet`][IpNet]")]
+    #[cfg_attr(
+        not(any(feature = "network-address", feature = "ipnet-address")),
+        doc = "N/A"
+    )]
     ///
     /// ### [`FromSql`] impls
     ///
-    #[cfg_attr(feature = "ipnetwork", doc = " - [`ipnetwork::IpNetwork`][IpNetwork]")]
-    #[cfg_attr(feature = "ipnet", doc = " - [`ipnet::IpNet`][IpNet]")]
-    #[cfg_attr(not(any(feature = "ipnetwork", feature = "ipnet")), doc = "N/A")]
+    #[cfg_attr(
+        feature = "network-address",
+        doc = " - [`ipnetwork::IpNetwork`][IpNetwork]"
+    )]
+    #[cfg_attr(feature = "ipnet-address", doc = " - [`ipnet::IpNet`][IpNet]")]
+    #[cfg_attr(
+        not(any(feature = "network-address", feature = "ipnet-address")),
+        doc = "N/A"
+    )]
     ///
     /// [`ToSql`]: crate::serialize::ToSql
     /// [`FromSql`]: crate::deserialize::FromSql
-    #[cfg_attr(feature = "ipnetwork", doc = " [IpNetwork]: ipnetwork::IpNetwork")]
-    #[cfg_attr(feature = "ipnet", doc = " [IpNet]: ipnet::IpNet")]
+    #[cfg_attr(
+        feature = "network-address",
+        doc = " [IpNetwork]: ipnetwork::IpNetwork"
+    )]
+    #[cfg_attr(feature = "ipnet-address", doc = " [IpNet]: ipnet::IpNet")]
     ///
     /// # Examples
     ///
@@ -487,20 +502,35 @@ pub mod sql_types {
     ///
     /// ### [`ToSql`] impls
     ///
-    #[cfg_attr(feature = "ipnetwork", doc = " - [`ipnetwork::IpNetwork`][IpNetwork]")]
-    #[cfg_attr(feature = "ipnet", doc = " - [`ipnet::IpNet`][IpNet]")]
-    #[cfg_attr(not(any(feature = "ipnetwork", feature = "ipnet")), doc = "N/A")]
+    #[cfg_attr(
+        feature = "network-address",
+        doc = " - [`ipnetwork::IpNetwork`][IpNetwork]"
+    )]
+    #[cfg_attr(feature = "ipnet-address", doc = " - [`ipnet::IpNet`][IpNet]")]
+    #[cfg_attr(
+        not(any(feature = "network-address", feature = "ipnet-address")),
+        doc = "N/A"
+    )]
     ///
     /// ### [`FromSql`] impls
     ///
-    #[cfg_attr(feature = "ipnetwork", doc = " - [`ipnetwork::IpNetwork`][IpNetwork]")]
-    #[cfg_attr(feature = "ipnet", doc = " - [`ipnet::IpNet`][IpNet]")]
-    #[cfg_attr(not(any(feature = "ipnetwork", feature = "ipnet")), doc = "N/A")]
+    #[cfg_attr(
+        feature = "network-address",
+        doc = " - [`ipnetwork::IpNetwork`][IpNetwork]"
+    )]
+    #[cfg_attr(feature = "ipnet-address", doc = " - [`ipnet::IpNet`][IpNet]")]
+    #[cfg_attr(
+        not(any(feature = "network-address", feature = "ipnet-address")),
+        doc = "N/A"
+    )]
     ///
     /// [`ToSql`]: crate::serialize::ToSql
     /// [`FromSql`]: crate::deserialize::FromSql
-    #[cfg_attr(feature = "ipnetwork", doc = " [IpNetwork]: ipnetwork::IpNetwork")]
-    #[cfg_attr(feature = "ipnet", doc = " [IpNet]: ipnet::IpNet")]
+    #[cfg_attr(
+        feature = "network-address",
+        doc = " [IpNetwork]: ipnetwork::IpNetwork"
+    )]
+    #[cfg_attr(feature = "ipnet-address", doc = " [IpNet]: ipnet::IpNet")]
     ///
     /// # Examples
     ///
@@ -561,6 +591,27 @@ pub mod sql_types {
     #[derive(Debug, Clone, Copy, Default, QueryId, SqlType)]
     #[diesel(postgres_type(oid = 18, array_oid = 1002))]
     pub struct CChar;
+
+    /// The [`Citext`] SQL type. This is a PostgreSQL specific type.
+    ///
+    /// Strings must be valid UTF-8.
+    ///
+    /// ### [`ToSql`] impls
+    ///
+    /// - [`String`]
+    /// - [`&str`][str]
+    ///
+    /// ### [`FromSql`] impls
+    ///
+    /// - [`String`]
+    ///
+    /// [`ToSql`]: crate::serialize::ToSql
+    /// [`FromSql`]: crate::deserialize::FromSql
+    /// [`Citext`]: https://www.postgresql.org/docs/current/citext.html
+    #[cfg(feature = "postgres_backend")]
+    #[derive(Debug, Clone, Copy, Default, QueryId, SqlType)]
+    #[diesel(postgres_type(name = "citext"))]
+    pub struct Citext;
 }
 
 mod ops {

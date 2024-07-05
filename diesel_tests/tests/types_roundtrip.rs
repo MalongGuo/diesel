@@ -26,7 +26,7 @@ where
         + Clone
         + ::std::fmt::Debug
         + 'static,
-    for<'a> dsl::BareSelect<<T as AsExpression<ST>>::Expression>:
+    for<'a> dsl::select<<T as AsExpression<ST>>::Expression>:
         AsQuery + LoadQuery<'a, TestConnection, T>,
 {
     let connection = &mut connection_without_transaction();
@@ -699,7 +699,7 @@ fn mk_f64(f: DoubleWrapper) -> f64 {
 impl quickcheck::Arbitrary for DoubleWrapper {
     fn arbitrary(g: &mut quickcheck::Gen) -> Self {
         let mut f = f64::arbitrary(g);
-        while (cfg!(feature = "sqlite") || cfg!(featuer = "mysql")) && f.is_nan() {
+        while (cfg!(feature = "sqlite") || cfg!(feature = "mysql")) && f.is_nan() {
             f = f64::arbitrary(g);
         }
         DoubleWrapper(f)

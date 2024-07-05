@@ -94,9 +94,6 @@
 //! by rustc, including the `required because of …` part of the message.
 //! Your IDE might hide important parts!
 //!
-//! If you use a nightly compiler you might want to enable the `nightly-error-messages`
-//! feature flag to automatically improve some error messages.
-//!
 //! The following error messages are common:
 //!
 //! * `the trait bound (diesel::sql_types::Integer, …, diesel::sql_types::Text): load_dsl::private::CompatibleType<YourModel, Pg> is not satisfied`
@@ -212,20 +209,14 @@
 //! explicitly opts out the stability guarantee given by diesel. This feature overrides the `with-deprecated`.
 //! Note that this may also remove items that are not shown as `#[deprecated]` in our documentation, due to
 //! various bugs in rustdoc. It can be used to check if you depend on any such hidden `#[deprecated]` item.
-//! - `nightly-error-messages`: This feature enables the generation of improved compiler error messages for
-//! common mistakes using diesel. This feature requires a nightly rust compiler and is considered to be unstable.
-//! It requires adding `#![feature(diagnostic_namespace)]` to your crate.
-//! We might remove it in future diesel versions without replacement or deprecation.
-//!
 //!
 //! By default the following features are enabled:
 //!
 //! - `with-deprecated`
 //! - `32-column-tables`
 
-#![cfg_attr(feature = "nightly-error-messages", feature(diagnostic_namespace))]
 #![cfg_attr(feature = "unstable", feature(trait_alias))]
-#![cfg_attr(doc_cfg, feature(doc_cfg, doc_auto_cfg))]
+#![cfg_attr(docsrs, feature(doc_cfg, doc_auto_cfg))]
 #![cfg_attr(feature = "128-column-tables", recursion_limit = "256")]
 // Built-in Lints
 #![warn(
@@ -373,6 +364,14 @@ pub mod helper_types {
     pub type Select<Source, Selection> = <Source as SelectDsl<Selection>>::Output;
 
     /// Represents the return type of [`diesel::select(selection)`](crate::select)
+    #[allow(non_camel_case_types)] // required for `#[auto_type]`
+    pub type select<Selection> = crate::query_builder::SelectStatement<
+        crate::query_builder::NoFromClause,
+        SelectClause<Selection>,
+    >;
+
+    #[doc(hidden)]
+    #[deprecated(note = "Use `select` instead")]
     pub type BareSelect<Selection> = crate::query_builder::SelectStatement<
         crate::query_builder::NoFromClause,
         SelectClause<Selection>,
@@ -689,6 +688,11 @@ pub mod prelude {
     pub use crate::expression::{
         AppearsOnTable, BoxableExpression, Expression, IntoSql, Selectable, SelectableExpression,
     };
+    // If [`IntoSql`](crate::expression::helper_types::IntoSql) the type gets imported at the
+    // same time as IntoSql the trait (this one) gets imported via the prelude, then
+    // methods of the trait won't be resolved because the type may take priority over the trait.
+    // That issue can be avoided by also importing it anonymously:
+    pub use crate::expression::IntoSql as _;
 
     #[doc(inline)]
     pub use crate::expression::functions::define_sql_function;
@@ -715,7 +719,10 @@ pub mod prelude {
     #[doc(inline)]
     pub use crate::query_source::{Column, JoinTo, QuerySource, Table};
     #[doc(inline)]
-    pub use crate::result::{ConnectionError, ConnectionResult, OptionalExtension, QueryResult};
+    pub use crate::result::{
+        ConnectionError, ConnectionResult, OptionalEmptyChangesetExtension, OptionalExtension,
+        QueryResult,
+    };
     #[doc(inline)]
     pub use diesel_derives::table_proc as table;
 

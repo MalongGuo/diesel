@@ -218,7 +218,7 @@ pub fn derive_diesel_numeric_ops(input: TokenStream) -> TokenStream {
     diesel_numeric_ops::derive(parse_macro_input!(input)).into()
 }
 
-/// Implements `Queryable` for primitive types
+/// Implements `Queryable` for types that correspond to a single SQL type. The type must implement `FromSql`.
 ///
 /// This derive is mostly useful to implement support deserializing
 /// into rust types not supported by Diesel itself.
@@ -1778,16 +1778,15 @@ pub fn derive_multiconnection(input: TokenStream) -> TokenStream {
 /// ```
 /// # Limitations
 ///
-/// While this attribute tries to support as much of diesels built-in DSL as possible it's unfortunally not
-/// possible to support everything. Notable unsupported types are:
+/// While this attribute tries to support as much of diesels built-in DSL as possible it's
+/// unfortunately not possible to support everything. Notable unsupported types are:
 ///
 /// * Update statements
 /// * Insert from select statements
-/// * Select statements without from clause
 /// * Query constructed by `diesel::sql_query`
 /// * Expressions using `diesel::dsl::sql`
 ///
-/// For this cases a manual type annotation is required. See the "Annotating Types" section below
+/// For these cases a manual type annotation is required. See the "Annotating Types" section below
 /// for details.
 ///
 ///

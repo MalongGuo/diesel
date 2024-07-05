@@ -692,6 +692,10 @@ fn pg_specific_option_to_sql() {
         "NULL::bool",
         None
     ));
+    assert!(query_to_sql_equality::<Nullable<Citext>, Option<String>>(
+        "NULL::citext",
+        None
+    ));
 }
 
 #[test]
@@ -1384,7 +1388,7 @@ where
 
 #[cfg(feature = "postgres")]
 #[test]
-#[should_panic(expected = "Received more than 4 bytes decoding i32")]
+#[should_panic(expected = "Received more than 4 bytes while decoding an i32")]
 fn debug_check_catches_reading_bigint_as_i32_when_using_raw_sql() {
     use diesel::dsl::sql;
     use diesel::sql_types::Integer;
@@ -1507,4 +1511,178 @@ fn cchar_to_sql() {
     assert!(query_to_sql_equality::<CChar, u8>(r#"'ä'::"char""#, 195u8));
     assert!(query_to_sql_equality::<CChar, u8>(r#"0::"char""#, b'\0'));
     assert!(query_to_sql_equality::<CChar, u8>(r#"'0'::"char""#, b'0'));
+}
+
+#[cfg(feature = "postgres")]
+#[test]
+fn citext_fields() {
+    let connection = &mut connection();
+
+    // Enable the CIText extension
+    diesel::sql_query("CREATE EXTENSION IF NOT EXISTS citext")
+        .execute(connection)
+        .unwrap();
+
+    diesel::sql_query(
+        "CREATE TABLE case_insensitive (
+            id SERIAL PRIMARY KEY,
+            non_null_ci citext NOT NULL,
+            nullable_ci citext NULL,
+            null_value citext NULL)",
+    )
+    .execute(connection)
+    .unwrap();
+
+    table! {
+        case_insensitive (id) {
+            id -> Int4,
+            non_null_ci -> Citext,
+            nullable_ci -> Nullable<Citext>,
+            null_value -> Nullable<Citext>,
+        }
+    }
+
+    let rows_inserted = insert_into(case_insensitive::table)
+        .values((
+            case_insensitive::non_null_ci.eq("UPPERCASE_VALUE".to_string()),
+            case_insensitive::nullable_ci.eq("lowercase_value"),
+            // Explicitly insert NULL
+            case_insensitive::null_value.eq(None::<String>.into_sql()),
+        ))
+        .execute(connection)
+        .unwrap();
+
+    // Demonstrates that a query for the uppercase value in the database will succeed when
+    // the search value is the lower cased version of that value
+    // Also verifies that a null value can be deserialised
+    let (uppercase_in_db, null_value): (String, Option<String>) = case_insensitive::table
+        .filter(case_insensitive::non_null_ci.eq("UPPERCASE_VALUE".to_lowercase()))
+        .select((case_insensitive::non_null_ci, case_insensitive::null_value))
+        .first(connection)
+        .unwrap();
+
+    assert_eq!(uppercase_in_db, "UPPERCASE_VALUE");
+    assert_eq!(null_value, Option::None);
+
+    // Demonstrates that a query for the lowercase value in the database will succeed when
+    // the search value is the upper cased version of that value
+    let (lowercase_in_db): (Option<String>) = case_insensitive::table
+        .filter(case_insensitive::nullable_ci.eq("lowercase_value".to_uppercase()))
+        .select((case_insensitive::nullable_ci))
+        .first(connection)
+        .unwrap();
+
+    assert_eq!(lowercase_in_db, Some("lowercase_value".to_string()));
+}
+
+#[test]
+#[cfg(feature = "postgres")]
+fn deserialize_wrong_primitive_gives_good_error() {
+    let conn = &mut connection();
+
+    diesel::sql_query(
+        "CREATE TABLE test_table(\
+                       bool BOOLEAN,
+                       small SMALLINT, \
+                       int INTEGER, \
+                       big BIGINT, \
+                       float FLOAT4, \
+                       double FLOAT8,
+                       text TEXT)",
+    )
+    .execute(conn)
+    .unwrap();
+    diesel::sql_query("INSERT INTO test_table VALUES('t', 1, 1, 1, 1, 1, 'long text long text')")
+        .execute(conn)
+        .unwrap();
+
+    let res = diesel::dsl::sql::<SmallInt>("SELECT bool FROM test_table").get_result::<i16>(conn);
+    assert!(res.is_err());
+    assert_eq!(
+        res.unwrap_err().to_string(),
+        "Error deserializing field 'bool': \
+         Received less than 2 bytes while decoding an i16. \
+         Was an expression of a different type accidentally marked as SmallInt?"
+    );
+
+    let res = diesel::dsl::sql::<SmallInt>("SELECT int FROM test_table").get_result::<i16>(conn);
+    assert!(res.is_err());
+    assert_eq!(
+        res.unwrap_err().to_string(),
+        "Error deserializing field 'int': \
+         Received more than 2 bytes while decoding an i16. \
+         Was an Integer expression accidentally marked as SmallInt?"
+    );
+
+    let res = diesel::dsl::sql::<Integer>("SELECT small FROM test_table").get_result::<i32>(conn);
+    assert!(res.is_err());
+    assert_eq!(
+        res.unwrap_err().to_string(),
+        "Error deserializing field 'small': \
+         Received less than 4 bytes while decoding an i32. \
+         Was an SmallInt expression accidentally marked as Integer?"
+    );
+
+    let res = diesel::dsl::sql::<Integer>("SELECT big FROM test_table").get_result::<i32>(conn);
+    assert!(res.is_err());
+    assert_eq!(
+        res.unwrap_err().to_string(),
+        "Error deserializing field 'big': \
+         Received more than 4 bytes while decoding an i32. \
+         Was an BigInt expression accidentally marked as Integer?"
+    );
+
+    let res = diesel::dsl::sql::<BigInt>("SELECT int FROM test_table").get_result::<i64>(conn);
+    assert!(res.is_err());
+    assert_eq!(
+        res.unwrap_err().to_string(),
+        "Error deserializing field 'int': \
+         Received less than 8 bytes while decoding an i64. \
+         Was an Integer expression accidentally marked as BigInt?"
+    );
+
+    let res = diesel::dsl::sql::<BigInt>("SELECT text FROM test_table").get_result::<i64>(conn);
+    assert!(res.is_err());
+    assert_eq!(
+        res.unwrap_err().to_string(),
+        "Error deserializing field 'text': \
+         Received more than 8 bytes while decoding an i64. \
+         Was an expression of a different type expression accidentally marked as BigInt?"
+    );
+
+    let res = diesel::dsl::sql::<Float>("SELECT small FROM test_table").get_result::<f32>(conn);
+    assert!(res.is_err());
+    assert_eq!(
+        res.unwrap_err().to_string(),
+        "Error deserializing field 'small': \
+         Received less than 4 bytes while decoding an f32. \
+         Was a numeric accidentally marked as float?"
+    );
+
+    let res = diesel::dsl::sql::<Float>("SELECT double FROM test_table").get_result::<f32>(conn);
+    assert!(res.is_err());
+    assert_eq!(
+        res.unwrap_err().to_string(),
+        "Error deserializing field 'double': \
+         Received more than 4 bytes while decoding an f32. \
+         Was a double accidentally marked as float?"
+    );
+
+    let res = diesel::dsl::sql::<Double>("SELECT float FROM test_table").get_result::<f64>(conn);
+    assert!(res.is_err());
+    assert_eq!(
+        res.unwrap_err().to_string(),
+        "Error deserializing field 'float': \
+         Received less than 8 bytes while decoding an f64. \
+         Was a float accidentally marked as double?"
+    );
+
+    let res = diesel::dsl::sql::<Double>("SELECT text FROM test_table").get_result::<f64>(conn);
+    assert!(res.is_err());
+    assert_eq!(
+        res.unwrap_err().to_string(),
+        "Error deserializing field 'text': \
+         Received more than 8 bytes while decoding an f64. \
+         Was a numeric accidentally marked as double?"
+    );
 }
