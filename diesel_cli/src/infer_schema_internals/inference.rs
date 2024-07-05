@@ -285,7 +285,7 @@ pub fn load_table_data(
         let primary_key:&Vec<_> =&primary_key;
 
         c.nullable = if !primary_key.contains(&column_name) { !column_name.ends_with("_id")} else {false };
-            let ty = determine_column_type(&c, connection)?;
+            let ty = determine_column_type(&c, connection, &name, &primary_key, config)?;
 
             let ColumnInformation {
                 column_name,
