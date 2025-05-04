@@ -843,3 +843,88 @@ fn option_fields_are_correctly_detected() {
     // Causes a compile error if the field is not detected as `Option<T>`
     define!((((Option<String>))));
 }
+
+#[test]
+fn embedded_struct() {
+    #[derive(AsChangeset)]
+    #[diesel(table_name = users)]
+    struct UserAttributes<'a> {
+        hair_color: &'a str,
+        r#type: &'a str,
+    }
+
+    #[derive(AsChangeset)]
+    #[diesel(table_name = users)]
+    struct UserForm<'a> {
+        name: &'a str,
+        #[diesel(embed)]
+        attribute: UserAttributes<'a>,
+    }
+
+    let connection = &mut connection_with_sean_and_tess_in_users_table();
+
+    update(users::table.find(1))
+        .set(&UserForm {
+            name: "Jim",
+            attribute: UserAttributes {
+                hair_color: "blue",
+                r#type: "super",
+            },
+        })
+        .execute(connection)
+        .unwrap();
+
+    let expected = vec![
+        (
+            1,
+            String::from("Jim"),
+            Some(String::from("blue")),
+            Some(String::from("super")),
+        ),
+        (
+            2,
+            String::from("Tess"),
+            Some(String::from("brown")),
+            Some(String::from("admin")),
+        ),
+    ];
+    let actual = users::table.order(users::id).load(connection);
+    assert_eq!(Ok(expected), actual);
+}
+
+#[test]
+fn skip_update() {
+    let connection = &mut connection_with_sean_and_tess_in_users_table();
+
+    #[derive(AsChangeset)]
+    #[diesel(table_name = users)]
+    #[diesel(primary_key(name))]
+    #[allow(dead_code)]
+    struct UserForm<'a> {
+        #[diesel(skip_update)]
+        name: &'a str,
+        hair_color: &'a str,
+        r#type: &'a str,
+        #[diesel(skip_update)]
+        non_existing: i32,
+    }
+
+    diesel::update(users::table.find(1))
+        .set(UserForm {
+            name: "John",
+            hair_color: "green",
+            r#type: "admin",
+            non_existing: 42,
+        })
+        .execute(connection)
+        .unwrap();
+
+    let res = users::table
+        .find(1)
+        .first::<(i32, String, Option<String>, Option<String>)>(connection)
+        .unwrap();
+
+    assert_eq!(res.1, "Sean");
+    assert_eq!(res.2, Some("green".into()));
+    assert_eq!(res.3, Some("admin".into()));
+}

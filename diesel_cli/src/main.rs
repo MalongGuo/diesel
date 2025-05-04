@@ -30,6 +30,7 @@ use database::InferConnection;
 use diesel::backend::Backend;
 use diesel::Connection;
 use diesel_migrations::{FileBasedMigrations, HarnessWithOutput, MigrationHarness};
+use similar_asserts::SimpleDiff;
 use std::error::Error;
 use std::io::stdout;
 use std::path::{Path, PathBuf};
@@ -49,7 +50,7 @@ fn main() {
 }
 
 fn inner_main() -> Result<(), crate::errors::Error> {
-    let filter = EnvFilter::from_default_env();
+    let filter = EnvFilter::from_env("DIESEL_LOG");
     let fmt = tracing_subscriber::fmt::layer();
 
     tracing_subscriber::Registry::default()
@@ -275,20 +276,23 @@ fn regenerate_schema_if_file_specified(matches: &ArgMatches) -> Result<(), crate
                     .map_err(|e| crate::errors::Error::IoError(e, Some(parent.to_owned())))?;
             }
 
+            let schema = print_schema::output_schema(&mut connection, config)?;
             if matches.get_flag("LOCKED_SCHEMA") {
-                let mut buf = Vec::new();
-                print_schema::run_print_schema(&mut connection, config, &mut buf)?;
-
-                let old_buf = std::fs::read(path)
+                let old_buf = std::fs::read_to_string(path)
                     .map_err(|e| crate::errors::Error::IoError(e, Some(path.to_owned())))?;
 
-                if buf != old_buf {
+                if schema.lines().ne(old_buf.lines()) {
+                    let label = path.file_name().expect("We have a file name here");
+                    let label = label.to_string_lossy();
+                    println!(
+                        "{}",
+                        SimpleDiff::from_str(&old_buf, &schema, &label, "new schema")
+                    );
                     return Err(crate::errors::Error::SchemaWouldChange(
                         path.display().to_string(),
                     ));
                 }
             } else {
-                let schema = print_schema::output_schema(&mut connection, config)?;
                 std::fs::write(path, schema.as_bytes())
                     .map_err(|e| crate::errors::Error::IoError(e, Some(path.to_owned())))?;
             }

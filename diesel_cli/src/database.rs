@@ -167,7 +167,13 @@ pub fn setup_database(
     let database_url = database_url(args)?;
 
     create_database_if_needed(&database_url)?;
-    create_default_migration_if_needed(&database_url, migrations_dir)?;
+
+    let default_migrations = !args.get_flag("NO_DEFAULT_MIGRATION");
+
+    if default_migrations {
+        create_default_migration_if_needed(&database_url, migrations_dir)?;
+    }
+
     create_schema_table_and_run_migrations_if_needed(&database_url, migrations_dir)?;
     Ok(())
 }
@@ -272,7 +278,7 @@ fn create_schema_table_and_run_migrations_if_needed(
 ) -> Result<(), crate::errors::Error> {
     if !schema_table_exists(database_url)? {
         let migrations = FileBasedMigrations::from_path(migrations_dir)
-            .map_err(|e| crate::errors::Error::MigrationError(Box::new(e)))?;
+            .map_err(|e| crate::errors::Error::from_migration_error(e, Some(migrations_dir)))?;
         let mut conn = InferConnection::from_url(database_url.to_owned())?;
         super::run_migrations_with_output(&mut conn, migrations)
             .map_err(crate::errors::Error::MigrationError)?;
@@ -286,7 +292,13 @@ fn drop_database(database_url: &str) -> Result<(), crate::errors::Error> {
     match Backend::for_url(database_url) {
         #[cfg(feature = "postgres")]
         Backend::Pg => {
-            let (database, postgres_url) = change_database_of_url(database_url, "postgres")?;
+            let (current_database, _) = get_database_and_url(database_url)?;
+            let default_database = if current_database.eq("postgres") {
+                "template1"
+            } else {
+                "postgres"
+            };
+            let (database, postgres_url) = change_database_of_url(database_url, default_database)?;
             let mut conn = PgConnection::establish(&postgres_url).map_err(|e| {
                 crate::errors::Error::ConnectionError {
                     error: e,
@@ -416,18 +428,24 @@ fn change_database_of_url(
     database_url: &str,
     default_database: &str,
 ) -> Result<(String, String), crate::errors::Error> {
-    let base = url::Url::parse(database_url)?;
-    let database = base
-        .path_segments()
-        .expect("The database url has at least one path segment")
-        .last()
-        .expect("The database url has at least one path segment")
-        .to_owned();
+    let (database, base) = get_database_and_url(database_url)?;
     let mut new_url = base
         .join(default_database)
         .expect("The provided database is always valid");
     new_url.set_query(base.query());
     Ok((database, new_url.into()))
+}
+
+#[cfg(any(feature = "postgres", feature = "mysql"))]
+fn get_database_and_url(database_url: &str) -> Result<(String, url::Url), crate::errors::Error> {
+    let base = url::Url::parse(database_url)?;
+    let database = base
+        .path_segments()
+        .expect("The database url has at least one path segment")
+        .next_back()
+        .expect("The database url has at least one path segment")
+        .to_owned();
+    Ok((database, base))
 }
 
 #[cfg(feature = "sqlite")]

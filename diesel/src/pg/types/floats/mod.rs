@@ -1,4 +1,4 @@
-use crate::deserialize::{self, FromSql, FromSqlRow};
+use crate::deserialize::{self, Defaultable, FromSql, FromSqlRow};
 use crate::expression::AsExpression;
 use crate::pg::{Pg, PgValue};
 use crate::serialize::{self, IsNull, Output, ToSql};
@@ -9,7 +9,7 @@ use std::error::Error;
 #[cfg(feature = "quickcheck")]
 mod quickcheck_impls;
 
-#[derive(Debug, Clone, PartialEq, Eq, AsExpression, FromSqlRow)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, AsExpression, FromSqlRow)]
 #[diesel(sql_type = sql_types::Numeric)]
 /// Represents a NUMERIC value, closely mirroring the PG wire protocol
 /// representation
@@ -33,6 +33,7 @@ pub enum PgNumeric {
         digits: Vec<i16>,
     },
     /// Not a number
+    #[default]
     NaN,
 }
 
@@ -101,7 +102,7 @@ impl ToSql<sql_types::Numeric, Pg> for PgNumeric {
             PgNumeric::Positive { scale, .. } | PgNumeric::Negative { scale, .. } => scale,
             PgNumeric::NaN => 0,
         };
-        out.write_u16::<NetworkEndian>(digits.len() as u16)?;
+        out.write_u16::<NetworkEndian>(digits.len().try_into()?)?;
         out.write_i16::<NetworkEndian>(weight)?;
         out.write_u16::<NetworkEndian>(sign)?;
         out.write_u16::<NetworkEndian>(scale)?;
@@ -110,6 +111,13 @@ impl ToSql<sql_types::Numeric, Pg> for PgNumeric {
         }
 
         Ok(IsNull::No)
+    }
+}
+
+#[cfg(feature = "postgres_backend")]
+impl Defaultable for PgNumeric {
+    fn default_value() -> Self {
+        Self::default()
     }
 }
 

@@ -86,7 +86,7 @@ pub trait CanInsertInSingleQuery<DB: Backend> {
     fn rows_to_insert(&self) -> Option<usize>;
 }
 
-impl<'a, T, DB> CanInsertInSingleQuery<DB> for &'a T
+impl<T, DB> CanInsertInSingleQuery<DB> for &T
 where
     T: ?Sized + CanInsertInSingleQuery<DB>,
     DB: Backend,
@@ -135,23 +135,17 @@ impl<Col, Expr> ColumnInsertValue<Col, Expr> {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Default, Copy, Clone)]
 #[doc(hidden)]
 pub enum DefaultableColumnInsertValue<T> {
     Expression(T),
+    #[default]
     Default,
 }
 
 impl<T> QueryId for DefaultableColumnInsertValue<T> {
     type QueryId = ();
     const HAS_STATIC_QUERY_ID: bool = false;
-}
-
-#[allow(clippy::derivable_impls)] // that's not supported on rust 1.65
-impl<T> Default for DefaultableColumnInsertValue<T> {
-    fn default() -> Self {
-        DefaultableColumnInsertValue::Default
-    }
 }
 
 impl<Col, Expr, DB> InsertValues<DB, Col::Table>
@@ -291,14 +285,8 @@ where
 {
     type Values = BatchInsert<Vec<T::Values>, Tab, [T::Values; N], true>;
 
-    // We must use the deprecated `IntoIter` function
-    // here as 1.51 (MSRV) does not support the new not
-    // deprecated variant
-    #[allow(deprecated)]
     fn values(self) -> Self::Values {
-        let values = std::array::IntoIter::new(self)
-            .map(Insertable::values)
-            .collect::<Vec<_>>();
+        let values = self.into_iter().map(Insertable::values).collect::<Vec<_>>();
         BatchInsert::new(values)
     }
 }

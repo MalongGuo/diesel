@@ -10,8 +10,11 @@
 //! statements is [`SimpleConnection::batch_execute`](super::SimpleConnection::batch_execute).
 //!
 //! In order to avoid the cost of re-parsing and planning subsequent queries,
-//! Diesel caches the prepared statement whenever possible. Queries will fall
-//! into one of three buckets:
+//! by default Diesel caches the prepared statement whenever possible. This
+//! can be customized by calling
+//! [`Connection::set_cache_size`](super::Connection::set_cache_size).
+//!
+//! Queries will fall into one of three buckets:
 //!
 //! - Unsafe to cache
 //! - Cached by SQL
@@ -30,9 +33,9 @@
 //! - queries containing `IN` with bind parameters
 //!     - This requires 1 bind parameter per value, and is therefore unbounded
 //!     - `IN` with subselects are cached (assuming the subselect is safe to
-//!        cache)
+//!       cache)
 //!     - `IN` statements for postgresql are cached as they use `= ANY($1)` instead
-//!        which does not cause a unbound number of binds
+//!       which does not cause an unbound number of binds
 //! - `INSERT` statements with a variable number of rows
 //!     - The SQL varies based on the number of rows being inserted.
 //! - `UPDATE` statements
@@ -94,16 +97,24 @@
 
 use std::any::TypeId;
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::hash::Hash;
 use std::ops::{Deref, DerefMut};
+
+use strategy::{
+    LookupStatementResult, StatementCacheStrategy, WithCacheStrategy, WithoutCacheStrategy,
+};
 
 use crate::backend::Backend;
 use crate::connection::InstrumentationEvent;
 use crate::query_builder::*;
 use crate::result::QueryResult;
 
-use super::Instrumentation;
+use super::{CacheSize, Instrumentation};
+
+/// Various interfaces and implementations to control connection statement caching.
+#[allow(unreachable_pub)]
+pub mod strategy;
 
 /// A prepared statement cache
 #[allow(missing_debug_implementations, unreachable_pub)]
@@ -112,7 +123,10 @@ use super::Instrumentation;
     doc(cfg(feature = "i-implement-a-third-party-backend-and-opt-into-breaking-changes"))
 )]
 pub struct StatementCache<DB: Backend, Statement> {
-    pub(crate) cache: HashMap<StatementCacheKey<DB>, Statement>,
+    cache: Box<dyn StatementCacheStrategy<DB, Statement>>,
+    // increment every time a query is cached
+    // some backends might use it to create unique prepared statement names
+    cache_counter: u64,
 }
 
 /// A helper type that indicates if a certain query
@@ -128,45 +142,51 @@ pub struct StatementCache<DB: Backend, Statement> {
 )]
 #[allow(unreachable_pub)]
 pub enum PrepareForCache {
-    /// The statement will be cached
-    Yes,
+    /// The statement will be cached    
+    Yes {
+        /// Counter might be used as unique identifier for prepared statement.
+        #[allow(dead_code)]
+        counter: u64,
+    },
     /// The statement won't be cached
     No,
 }
 
-#[allow(
-    clippy::len_without_is_empty,
-    clippy::new_without_default,
-    unreachable_pub
-)]
+#[allow(clippy::new_without_default, unreachable_pub)]
 impl<DB, Statement> StatementCache<DB, Statement>
 where
-    DB: Backend,
-    DB::TypeMetadata: Clone,
+    DB: Backend + 'static,
+    Statement: Send + 'static,
+    DB::TypeMetadata: Send + Clone,
     DB::QueryBuilder: Default,
     StatementCacheKey<DB>: Hash + Eq,
 {
-    /// Create a new prepared statement cache
+    /// Create a new prepared statement cache using [`CacheSize::Unbounded`] as caching strategy.
     #[allow(unreachable_pub)]
     pub fn new() -> Self {
         StatementCache {
-            cache: HashMap::new(),
+            cache: Box::new(WithCacheStrategy::default()),
+            cache_counter: 0,
         }
     }
 
-    /// Get the current length of the statement cache
-    #[allow(unreachable_pub)]
-    #[cfg(any(
-        feature = "i-implement-a-third-party-backend-and-opt-into-breaking-changes",
-        feature = "postgres",
-        all(feature = "sqlite", test)
-    ))]
-    #[cfg_attr(
-        docsrs,
-        doc(cfg(feature = "i-implement-a-third-party-backend-and-opt-into-breaking-changes"))
-    )]
-    pub fn len(&self) -> usize {
-        self.cache.len()
+    /// Set caching strategy from predefined implementations
+    pub fn set_cache_size(&mut self, size: CacheSize) {
+        if self.cache.cache_size() != size {
+            self.cache = match size {
+                CacheSize::Unbounded => Box::new(WithCacheStrategy::default()),
+                CacheSize::Disabled => Box::new(WithoutCacheStrategy::default()),
+            }
+        }
+    }
+
+    /// Setting custom caching strategy. It is used in tests, to verify caching logic
+    #[allow(dead_code)]
+    pub(crate) fn set_strategy<Strategy>(&mut self, s: Strategy)
+    where
+        Strategy: StatementCacheStrategy<DB, Statement> + 'static,
+    {
+        self.cache = Box::new(s);
     }
 
     /// Prepare a query as prepared statement
@@ -180,63 +200,152 @@ where
     /// parameter indicates if the constructed prepared statement will be cached or not.
     /// See the [module](self) documentation for details
     /// about which statements are cached and which are not cached.
+    //
+    // Notes:
+    // This function takes explicitly a connection and a function pointer (and no generic callback)
+    // as argument to ensure that we don't leak generic query types into the prepare function
     #[allow(unreachable_pub)]
-    pub fn cached_statement<T, F>(
-        &mut self,
+    pub fn cached_statement<'a, T, R, C>(
+        &'a mut self,
         source: &T,
         backend: &DB,
         bind_types: &[DB::TypeMetadata],
-        mut prepare_fn: F,
+        conn: C,
+        prepare_fn: fn(C, &str, PrepareForCache, &[DB::TypeMetadata]) -> R,
         instrumentation: &mut dyn Instrumentation,
-    ) -> QueryResult<MaybeCached<'_, Statement>>
+    ) -> R::Return<'a>
     where
         T: QueryFragment<DB> + QueryId,
-        F: FnMut(&str, PrepareForCache) -> QueryResult<Statement>,
+        R: StatementCallbackReturnType<Statement, C> + 'a,
     {
         self.cached_statement_non_generic(
             T::query_id(),
             source,
             backend,
             bind_types,
-            &mut prepare_fn,
+            conn,
+            prepare_fn,
             instrumentation,
         )
     }
 
-    /// Reduce the amount of monomorphized code by factoring this via dynamic dispatch
-    fn cached_statement_non_generic(
-        &mut self,
+    /// Prepare a query as prepared statement
+    ///
+    /// This function closely mirrors `Self::cached_statement` but
+    /// eliminates the generic query type in favour of a trait object
+    ///
+    /// This can be easier to use in situations where you already turned
+    /// the query type into a concrete SQL string
+    // Notes:
+    // This function takes explicitly a connection and a function pointer (and no generic callback)
+    // as argument to ensure that we don't leak generic query types into the prepare function
+    #[allow(unreachable_pub)]
+    #[allow(clippy::too_many_arguments)] // we need all of them
+    pub fn cached_statement_non_generic<'a, R, C>(
+        &'a mut self,
         maybe_type_id: Option<TypeId>,
         source: &dyn QueryFragmentForCachedStatement<DB>,
         backend: &DB,
         bind_types: &[DB::TypeMetadata],
-        prepare_fn: &mut dyn FnMut(&str, PrepareForCache) -> QueryResult<Statement>,
+        conn: C,
+        prepare_fn: fn(C, &str, PrepareForCache, &[DB::TypeMetadata]) -> R,
         instrumentation: &mut dyn Instrumentation,
-    ) -> QueryResult<MaybeCached<'_, Statement>> {
-        use std::collections::hash_map::Entry::{Occupied, Vacant};
+    ) -> R::Return<'a>
+    where
+        R: StatementCallbackReturnType<Statement, C> + 'a,
+    {
+        Self::cached_statement_non_generic_impl(
+            self.cache.as_mut(),
+            maybe_type_id,
+            source,
+            backend,
+            bind_types,
+            conn,
+            |conn, sql, is_cached| {
+                if is_cached {
+                    instrumentation.on_connection_event(InstrumentationEvent::CacheQuery { sql });
+                    self.cache_counter += 1;
+                    prepare_fn(
+                        conn,
+                        sql,
+                        PrepareForCache::Yes {
+                            counter: self.cache_counter,
+                        },
+                        bind_types,
+                    )
+                } else {
+                    prepare_fn(conn, sql, PrepareForCache::No, bind_types)
+                }
+            },
+        )
+    }
 
-        let cache_key = StatementCacheKey::for_source(maybe_type_id, source, bind_types, backend)?;
-
-        if !source.is_safe_to_cache_prepared(backend)? {
-            let sql = cache_key.sql(source, backend)?;
-            return prepare_fn(&sql, PrepareForCache::No).map(MaybeCached::CannotCache);
-        }
-
-        let cached_result = match self.cache.entry(cache_key) {
-            Occupied(entry) => entry.into_mut(),
-            Vacant(entry) => {
-                let statement = {
-                    let sql = entry.key().sql(source, backend)?;
-                    instrumentation
-                        .on_connection_event(InstrumentationEvent::CacheQuery { sql: &sql });
-                    prepare_fn(&sql, PrepareForCache::Yes)
-                };
-
-                entry.insert(statement?)
-            }
+    /// Reduce the amount of monomorphized code by factoring this via dynamic dispatch
+    /// There will be only one instance of `R` for diesel (and a different single instance for diesel-async)
+    /// There will be only a instance per connection type `C` for each connection that
+    /// uses this prepared statement impl, this closely correlates to the types `DB` and `Statement`
+    /// for the overall statement cache impl
+    fn cached_statement_non_generic_impl<'a, R, C>(
+        cache: &'a mut dyn StatementCacheStrategy<DB, Statement>,
+        maybe_type_id: Option<TypeId>,
+        source: &dyn QueryFragmentForCachedStatement<DB>,
+        backend: &DB,
+        bind_types: &[DB::TypeMetadata],
+        conn: C,
+        prepare_fn: impl FnOnce(C, &str, bool) -> R,
+    ) -> R::Return<'a>
+    where
+        R: StatementCallbackReturnType<Statement, C> + 'a,
+    {
+        // this function cannot use the `?` operator
+        // as we want to abstract over returning `QueryResult<MaybeCached>` and
+        // `impl Future<Output = QueryResult<MaybeCached>>` here
+        // to share the prepared statement cache implementation between diesel and
+        // diesel_async
+        //
+        // For this reason we need to match explicitly on each error and call `R::from_error()`
+        // to construct the right error return variant
+        let cache_key =
+            match StatementCacheKey::for_source(maybe_type_id, source, bind_types, backend) {
+                Ok(o) => o,
+                Err(e) => return R::from_error(e),
+            };
+        let is_safe_to_cache_prepared = match source.is_safe_to_cache_prepared(backend) {
+            Ok(o) => o,
+            Err(e) => return R::from_error(e),
         };
-
-        Ok(MaybeCached::Cached(cached_result))
+        // early return if the statement cannot be cached
+        if !is_safe_to_cache_prepared {
+            let sql = match cache_key.sql(source, backend) {
+                Ok(sql) => sql,
+                Err(e) => return R::from_error(e),
+            };
+            return prepare_fn(conn, &sql, false).map_to_no_cache();
+        }
+        let entry = cache.lookup_statement(cache_key);
+        match entry {
+            // The statement is already cached
+            LookupStatementResult::CacheEntry(Entry::Occupied(e)) => {
+                R::map_to_cache(e.into_mut(), conn)
+            }
+            // The statement is not cached but there is capacity to cache it
+            LookupStatementResult::CacheEntry(Entry::Vacant(e)) => {
+                let sql = match e.key().sql(source, backend) {
+                    Ok(sql) => sql,
+                    Err(e) => return R::from_error(e),
+                };
+                let st = prepare_fn(conn, &sql, true);
+                st.register_cache(|stmt| e.insert(stmt))
+            }
+            // The statement is not cached and there is no capacity to cache it
+            LookupStatementResult::NoCache(cache_key) => {
+                let sql = match cache_key.sql(source, backend) {
+                    Ok(sql) => sql,
+                    Err(e) => return R::from_error(e),
+                };
+                prepare_fn(conn, &sql, false).map_to_no_cache()
+            }
+        }
     }
 }
 
@@ -257,9 +366,11 @@ where
 pub trait QueryFragmentForCachedStatement<DB> {
     /// Convert the query fragment into a SQL string for the given backend
     fn construct_sql(&self, backend: &DB) -> QueryResult<String>;
+
     /// Check whether it's safe to cache the query
     fn is_safe_to_cache_prepared(&self, backend: &DB) -> QueryResult<bool>;
 }
+
 impl<T, DB> QueryFragmentForCachedStatement<DB> for T
 where
     DB: Backend,
@@ -294,7 +405,72 @@ pub enum MaybeCached<'a, T: 'a> {
     Cached(&'a mut T),
 }
 
-impl<'a, T> Deref for MaybeCached<'a, T> {
+/// This trait abstracts over the type returned by the prepare statement function
+///
+/// The main use-case for this abstraction is to share the same statement cache implementation
+/// between diesel and diesel-async.
+#[cfg_attr(
+    docsrs,
+    doc(cfg(feature = "i-implement-a-third-party-backend-and-opt-into-breaking-changes"))
+)]
+#[allow(unreachable_pub)]
+pub trait StatementCallbackReturnType<S: 'static, C> {
+    /// The return type of `StatementCache::cached_statement`
+    ///
+    /// Either a `QueryResult<MaybeCached<S>>` or a future of that result type
+    type Return<'a>;
+
+    /// Create the return type from an error
+    fn from_error<'a>(e: diesel::result::Error) -> Self::Return<'a>;
+
+    /// Map the callback return type to the `MaybeCached::CannotCache` variant
+    fn map_to_no_cache<'a>(self) -> Self::Return<'a>
+    where
+        Self: 'a;
+
+    /// Map the cached statement to the `MaybeCached::Cached` variant
+    fn map_to_cache(stmt: &mut S, conn: C) -> Self::Return<'_>;
+
+    /// Insert the created statement into the cache via the provided callback
+    /// and then turn the returned reference into `MaybeCached::Cached`
+    fn register_cache<'a>(
+        self,
+        callback: impl FnOnce(S) -> &'a mut S + Send + 'a,
+    ) -> Self::Return<'a>
+    where
+        Self: 'a;
+}
+
+impl<S, C> StatementCallbackReturnType<S, C> for QueryResult<S>
+where
+    S: 'static,
+{
+    type Return<'a> = QueryResult<MaybeCached<'a, S>>;
+
+    fn from_error<'a>(e: diesel::result::Error) -> Self::Return<'a> {
+        Err(e)
+    }
+
+    fn map_to_no_cache<'a>(self) -> Self::Return<'a> {
+        self.map(MaybeCached::CannotCache)
+    }
+
+    fn map_to_cache(stmt: &mut S, _conn: C) -> Self::Return<'_> {
+        Ok(MaybeCached::Cached(stmt))
+    }
+
+    fn register_cache<'a>(
+        self,
+        callback: impl FnOnce(S) -> &'a mut S + Send + 'a,
+    ) -> Self::Return<'a>
+    where
+        Self: 'a,
+    {
+        Ok(MaybeCached::Cached(callback(self?)))
+    }
+}
+
+impl<T> Deref for MaybeCached<'_, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
@@ -305,7 +481,7 @@ impl<'a, T> Deref for MaybeCached<'a, T> {
     }
 }
 
-impl<'a, T> DerefMut for MaybeCached<'a, T> {
+impl<T> DerefMut for MaybeCached<'_, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         match *self {
             MaybeCached::CannotCache(ref mut x) => x,
